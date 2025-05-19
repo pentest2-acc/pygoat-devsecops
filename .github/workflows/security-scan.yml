@@ -15,14 +15,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Run Semgrep Scan
         run: |
           docker run --rm -v "$(pwd):/src" returntocorp/semgrep semgrep scan \
             --config auto \
             --error \
             --json > semgrep-results.json || true
-          
+
       - name: Upload Results
         uses: actions/upload-artifact@v4
         with:
@@ -34,15 +34,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Run Snyk Scan
         run: |
-          # First try with --all-projects, fallback to --file if that fails
           docker run --rm -v "$(pwd):/project" -e SNYK_TOKEN=${{ secrets.SNYK_TOKEN }} \
-            snyk/snyk-cli:docker code test --all-projects --json-file-output=snyk-results.json || true\
+            snyk/snyk-cli:docker code test --all-projects --json-file-output=snyk-results.json || \
           docker run --rm -v "$(pwd):/project" -e SNYK_TOKEN=${{ secrets.SNYK_TOKEN }} \
             snyk/snyk-cli:docker code test --file=package.json --json-file-output=snyk-results.json || true
-            
+
       - name: Upload Results
         uses: actions/upload-artifact@v4
         with:
@@ -55,19 +54,52 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      
-      - name: Run Trivy Scan
+
+      - name: Run Trivy Vulnerability FS Scan
         run: |
-          # Create output directory first
           mkdir -p trivy-output
           docker run --rm -v "$(pwd):/src" \
             -v /tmp/trivy-cache:/root/.cache \
             aquasec/trivy:latest fs --scanners vuln /src \
             --format json \
-            --output /src/trivy-output/trivy-results.json || true
-            
-      - name: Upload Results
+            --output /src/trivy-output/trivy-vuln-results.json || true
+
+      - name: Run Trivy SCA Scan (Dependencies)
+        run: |
+          docker run --rm -v "$(pwd):/src" \
+            -v /tmp/trivy-cache:/root/.cache \
+            aquasec/trivy:latest fs --scanners license,secret,config /src \
+            --format json \
+            --output /src/trivy-output/trivy-sca-results.json || true
+
+      - name: Generate SBOM
+        run: |
+          docker run --rm -v "$(pwd):/src" \
+            -v /tmp/trivy-cache:/root/.cache \
+            aquasec/trivy:latest sbom /src \
+            --format cyclonedx \
+            --output /src/trivy-output/sbom.json || true
+
+      - name: Upload Trivy Results
         uses: actions/upload-artifact@v4
         with:
           name: trivy-results
-          path: trivy-output/trivy-results.json
+          path: trivy-output/
+
+  trufflehog-scan:
+    name: TruffleHog Secrets Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run TruffleHog
+        run: |
+          mkdir -p trufflehog-output
+          docker run --rm -v "$(pwd):/pwd" trufflesecurity/trufflehog:latest \
+            filesystem --directory /pwd --json > trufflehog-output/trufflehog-results.json || true
+
+      - name: Upload TruffleHog Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: trufflehog-results
+          path: trufflehog-output/trufflehog-results.json
