@@ -8,10 +8,11 @@ on:
   schedule:
     - cron: '0 0 * * 0' # Weekly scans on Sunday
 
+# Explicit permissions needed for artifact upload
 permissions:
   contents: read
-  security-events: write
   actions: write
+  security-events: write
 
 jobs:
   semgrep:
@@ -41,7 +42,7 @@ jobs:
           sarif_file: semgrep.json
           
       - name: Upload Full Report
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: semgrep-full-report
           path: semgrep.json
@@ -75,7 +76,7 @@ jobs:
         continue-on-error: true
         
       - name: Upload Reports
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: snyk-reports
           path: |
@@ -101,23 +102,11 @@ jobs:
                   .
         continue-on-error: true
         
-      - name: Repository Scan
-        run: |
-          trivy repo --security-checks vuln \
-                    --format json \
-                    --output trivy-repo-report.json \
-                    $GITHUB_REPOSITORY
-        continue-on-error: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          
-      - name: Upload Reports
-        uses: actions/upload-artifact@v3
+      - name: Upload Report
+        uses: actions/upload-artifact@v4
         with:
           name: trivy-reports
-          path: |
-            trivy-fs-report.json
-            trivy-repo-report.json
+          path: trivy-fs-report.json
 
   report:
     name: Generate Summary
@@ -126,7 +115,7 @@ jobs:
     if: always()
     steps:
       - name: Download All Reports
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           path: reports
           
@@ -149,7 +138,7 @@ jobs:
           jq '.Results | length' reports/trivy-reports/trivy-fs-report.json >> summary.md
           
       - name: Upload Summary
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: security-summary
           path: summary.md
