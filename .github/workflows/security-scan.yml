@@ -39,7 +39,7 @@ jobs:
         run: |
           # First try with --all-projects, fallback to --file if that fails
           docker run --rm -v "$(pwd):/project" -e SNYK_TOKEN=${{ secrets.SNYK_TOKEN }} \
-            snyk/snyk-cli:docker code test --all-projects --json-file-output=snyk-results.json || \
+            snyk/snyk-cli:docker code test --all-projects --json-file-output=snyk-results.json || true\
           docker run --rm -v "$(pwd):/project" -e SNYK_TOKEN=${{ secrets.SNYK_TOKEN }} \
             snyk/snyk-cli:docker code test --file=package.json --json-file-output=snyk-results.json || true
             
