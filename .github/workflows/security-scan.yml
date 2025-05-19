@@ -1,69 +1,155 @@
-name: Security Scanning
+name: Advanced Security Scanning
 
 on:
   push:
-    branches:
-      - master
+    branches: [ master, main ]
   pull_request:
+    branches: [ master, main ]
+  schedule:
+    - cron: '0 0 * * 0' # Weekly scans on Sunday
+
+permissions:
+  contents: read
+  security-events: write
+  actions: write
 
 jobs:
   semgrep:
+    name: Semgrep SAST
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-
+      - uses: actions/checkout@v4
+      
       - name: Install Semgrep
-        run: pip install semgrep
-
-      - name: Run Semgrep
-        run: semgrep --config auto --json > semgrep.json
+        run: |
+          curl -L https://semgrep.dev/install | sh -s -- -b /usr/local/bin
+          
+      - name: Run Semgrep Scan
+        run: |
+          semgrep --config auto \
+                  --config p/owasp-top-ten \
+                  --config p/ci \
+                  --error \
+                  --metrics=off \
+                  --json > semgrep.json \
+          || echo "Semgrep found issues - check report"
         continue-on-error: true
-
-      - name: Upload Semgrep Report
-        if: success() || failure()
+        
+      - name: Upload SARIF Report
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: semgrep.json
+          
+      - name: Upload Full Report
         uses: actions/upload-artifact@v3
         with:
-          name: semgrep-report
+          name: semgrep-full-report
           path: semgrep.json
 
   snyk:
+    name: Snyk Security Scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-
-      - name: Install Snyk CLI
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          
+      - name: Install Snyk
+        run: npm install -g snyk
+      
+      - name: Snyk Code Analysis
         run: |
-          npm install -g snyk
-          snyk auth ${{ secrets.SNYK_TOKEN }}
-
-      - name: Run Snyk
-        run: snyk code test --json > snyk-report.json || true
+          snyk code test --json > snyk-code-report.json \
+          || echo "Snyk found code issues - check report"
         continue-on-error: true
-
-      - name: Upload Snyk Report
-        if: success() || failure()
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+          
+      - name: Snyk Open Source Scan
+        run: |
+          snyk test --json > snyk-dep-report.json \
+          || echo "Snyk found dependency issues - check report"
+        continue-on-error: true
+        
+      - name: Upload Reports
         uses: actions/upload-artifact@v3
         with:
-          name: snyk-report
-          path: snyk-report.json
+          name: snyk-reports
+          path: |
+            snyk-code-report.json
+            snyk-dep-report.json
 
   trivy:
+    name: Trivy Security Scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-
+      - uses: actions/checkout@v4
+      
       - name: Install Trivy
+        uses: aquasecurity/trivy-action@0.9.2
+        with:
+          trivy-version: '0.45.1'
+          
+      - name: Filesystem Scan
         run: |
-          sudo apt-get update && sudo apt-get install -y wget curl
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
-
-      - name: Run Trivy
-        run: trivy fs . --format json --output trivy-report.json
+          trivy fs --security-checks vuln,secret,config \
+                  --format json \
+                  --output trivy-fs-report.json \
+                  .
         continue-on-error: true
-
-      - name: Upload Trivy Report
-        if: success() || failure()
+        
+      - name: Repository Scan
+        run: |
+          trivy repo --security-checks vuln \
+                    --format json \
+                    --output trivy-repo-report.json \
+                    $GITHUB_REPOSITORY
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: Upload Reports
         uses: actions/upload-artifact@v3
         with:
-          name: trivy-report
-          path: trivy-report.json
+          name: trivy-reports
+          path: |
+            trivy-fs-report.json
+            trivy-repo-report.json
+
+  report:
+    name: Generate Summary
+    needs: [semgrep, snyk, trivy]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Download All Reports
+        uses: actions/download-artifact@v3
+        with:
+          path: reports
+          
+      - name: Create Summary
+        run: |
+          echo "Security Scan Summary" > summary.md
+          echo "====================" >> summary.md
+          echo "" >> summary.md
+          
+          echo "### Semgrep Findings" >> summary.md
+          jq '.results | length' reports/semgrep-full-report/semgrep.json >> summary.md
+          
+          echo "### Snyk Code Findings" >> summary.md
+          jq '.runs[0].results | length' reports/snyk-reports/snyk-code-report.json >> summary.md
+          
+          echo "### Snyk Dependency Findings" >> summary.md
+          jq '.vulnerabilities | length' reports/snyk-reports/snyk-dep-report.json >> summary.md
+          
+          echo "### Trivy Filesystem Findings" >> summary.md
+          jq '.Results | length' reports/trivy-reports/trivy-fs-report.json >> summary.md
+          
+      - name: Upload Summary
+        uses: actions/upload-artifact@v3
+        with:
+          name: security-summary
+          path: summary.md
