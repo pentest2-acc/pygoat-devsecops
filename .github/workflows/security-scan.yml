@@ -35,11 +35,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
-      - name: Run Snyk Scan (Docker container)
+      - name: Run Snyk Scan
         run: |
-          docker run --rm -v "${PWD}:/app" -w /app \
-            -e SNYK_TOKEN=${{ secrets.SNYK_TOKEN }} \
-            snyk/snyk:linux scan --json > snyk-results.json || true
+          docker run --rm -v "${PWD}:/app" -e SNYK_TOKEN=${{ secrets.SNYK_TOKEN }} \
+            snyk/snyk-cli:docker test --all-projects --json > snyk-results.json || true
             
       - name: Upload Results
         uses: actions/upload-artifact@v4
@@ -50,12 +49,15 @@ jobs:
   trivy-scan:
     name: Trivy Scan
     runs-on: ubuntu-latest
+    timeout-minutes: 10  # Prevents timeout during DB download
     steps:
       - uses: actions/checkout@v4
       
-      - name: Run Trivy Filesystem Scan
+      - name: Run Trivy Scan
         run: |
-          docker run --rm -v "${PWD}:/src" aquasec/trivy fs --security-checks vuln /src \
+          docker run --rm -v "${PWD}:/src" \
+            -v /tmp/trivy:/root/.cache/trivy \  # Cache DB between runs
+            aquasec/trivy:latest fs --scanners vuln /src \
             --format json \
             --output trivy-results.json || true
             
