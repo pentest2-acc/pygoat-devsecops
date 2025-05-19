@@ -37,7 +37,7 @@ jobs:
           snyk auth ${{ secrets.SNYK_TOKEN }}
 
       - name: Run Snyk
-        run: snyk test --json > snyk-report.json || true
+        run: snyk code test --json > snyk-report.json || true
         continue-on-error: true
 
       - name: Upload Snyk Report
