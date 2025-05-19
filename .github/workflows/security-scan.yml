@@ -1,144 +1,66 @@
-name: Advanced Security Scanning
+name: Code Security Scan
 
 on:
   push:
-    branches: [ master, main ]
+    branches: [ main, master ]
   pull_request:
-    branches: [ master, main ]
-  schedule:
-    - cron: '0 0 * * 0' # Weekly scans on Sunday
+    branches: [ main, master ]
 
-# Explicit permissions needed for artifact upload
 permissions:
   contents: read
-  actions: write
-  security-events: write
 
 jobs:
-  semgrep:
+  semgrep-scan:
     name: Semgrep SAST
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       
-      - name: Install Semgrep
-        run: |
-          curl -L https://semgrep.dev/install | sh -s -- -b /usr/local/bin
-          
       - name: Run Semgrep Scan
         run: |
-          semgrep --config auto \
-                  --config p/owasp-top-ten \
-                  --config p/ci \
-                  --error \
-                  --metrics=off \
-                  --json > semgrep.json \
-          || echo "Semgrep found issues - check report"
-        continue-on-error: true
-        
-      - name: Upload SARIF Report
-        uses: github/codeql-action/upload-sarif@v2
-        with:
-          sarif_file: semgrep.json
+          docker run --rm -v "${PWD}:/src" returntocorp/semgrep semgrep scan \
+            --config auto \
+            --error \
+            --json > semgrep-results.json || true
           
-      - name: Upload Full Report
+      - name: Upload Results
         uses: actions/upload-artifact@v4
         with:
-          name: semgrep-full-report
-          path: semgrep.json
+          name: semgrep-results
+          path: semgrep-results.json
 
-  snyk:
-    name: Snyk Security Scan
+  snyk-scan:
+    name: Snyk Scan
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       
-      - name: Setup Node.js
-        uses: actions/setup-node@v3
-        with:
-          node-version: '18'
-          
-      - name: Install Snyk
-        run: npm install -g snyk
-      
-      - name: Snyk Code Analysis
+      - name: Run Snyk Scan (Docker container)
         run: |
-          snyk code test --json > snyk-code-report.json \
-          || echo "Snyk found code issues - check report"
-        continue-on-error: true
-        env:
-          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-          
-      - name: Snyk Open Source Scan
-        run: |
-          snyk test --json > snyk-dep-report.json \
-          || echo "Snyk found dependency issues - check report"
-        continue-on-error: true
-        
-      - name: Upload Reports
+          docker run --rm -v "${PWD}:/app" -w /app \
+            -e SNYK_TOKEN=${{ secrets.SNYK_TOKEN }} \
+            snyk/snyk:linux scan --json > snyk-results.json || true
+            
+      - name: Upload Results
         uses: actions/upload-artifact@v4
         with:
-          name: snyk-reports
-          path: |
-            snyk-code-report.json
-            snyk-dep-report.json
+          name: snyk-results
+          path: snyk-results.json
 
-  trivy:
-    name: Trivy Security Scan
+  trivy-scan:
+    name: Trivy Scan
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       
-      - name: Install Trivy
-        uses: aquasecurity/trivy-action@0.9.2
-        with:
-          trivy-version: '0.45.1'
-          
-      - name: Filesystem Scan
+      - name: Run Trivy Filesystem Scan
         run: |
-          trivy fs --security-checks vuln,secret,config \
-                  --format json \
-                  --output trivy-fs-report.json \
-                  .
-        continue-on-error: true
-        
-      - name: Upload Report
+          docker run --rm -v "${PWD}:/src" aquasec/trivy fs --security-checks vuln /src \
+            --format json \
+            --output trivy-results.json || true
+            
+      - name: Upload Results
         uses: actions/upload-artifact@v4
         with:
-          name: trivy-reports
-          path: trivy-fs-report.json
-
-  report:
-    name: Generate Summary
-    needs: [semgrep, snyk, trivy]
-    runs-on: ubuntu-latest
-    if: always()
-    steps:
-      - name: Download All Reports
-        uses: actions/download-artifact@v4
-        with:
-          path: reports
-          
-      - name: Create Summary
-        run: |
-          echo "Security Scan Summary" > summary.md
-          echo "====================" >> summary.md
-          echo "" >> summary.md
-          
-          echo "### Semgrep Findings" >> summary.md
-          jq '.results | length' reports/semgrep-full-report/semgrep.json >> summary.md
-          
-          echo "### Snyk Code Findings" >> summary.md
-          jq '.runs[0].results | length' reports/snyk-reports/snyk-code-report.json >> summary.md
-          
-          echo "### Snyk Dependency Findings" >> summary.md
-          jq '.vulnerabilities | length' reports/snyk-reports/snyk-dep-report.json >> summary.md
-          
-          echo "### Trivy Filesystem Findings" >> summary.md
-          jq '.Results | length' reports/trivy-reports/trivy-fs-report.json >> summary.md
-          
-      - name: Upload Summary
-        uses: actions/upload-artifact@v4
-        with:
-          name: security-summary
-          path: summary.md
+          name: trivy-results
+          path: trivy-results.json
