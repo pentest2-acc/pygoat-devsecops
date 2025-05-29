@@ -40,7 +40,6 @@ jobs:
           name: semgrep-results-json
           path: semgrep-results.json
 
----
   snyk-sast:
     name: Snyk (SAST)
     runs-on: ubuntu-latest
@@ -71,7 +70,6 @@ jobs:
           name: snyk-sast-results-json
           path: snyk-results/snyk-sast.json
 
----
   snyk-sca:
     name: Snyk (SCA)
     runs-on: ubuntu-latest
@@ -102,7 +100,6 @@ jobs:
           name: snyk-sca-results-json
           path: snyk-sca-results/snyk-sca.json
 
----
   trivy-scans:
     name: Trivy (SCA, Misconfig, Secret, SBOM)
     runs-on: ubuntu-latest
@@ -139,7 +136,6 @@ jobs:
           name: trivy-results
           path: trivy-output/
 
----
   trufflehog-secrets:
     name: TruffleHog (Secrets)
     runs-on: ubuntu-latest
@@ -165,7 +161,6 @@ jobs:
           name: trufflehog-results-json
           path: trufflehog-output/results.json
 
----
   owasp-zap-dast:
     name: OWASP ZAP (DAST)
     runs-on: ubuntu-latest
