@@ -1,0 +1,219 @@
+name: Comprehensive Code Security Scan
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+# Permissions required for uploading SARIF results to the Security tab
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  semgrep-sast:
+    name: Semgrep (SAST)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Semgrep Scan
+        run: |
+          # Generate JSON report for artifacts
+          docker run --rm -v "$(pwd):/src" returntocorp/semgrep semgrep scan \
+            --config auto --error --json > semgrep-results.json || true
+          
+          # Generate SARIF report for security tab
+          docker run --rm -v "$(pwd):/src" returntocorp/semgrep semgrep scan \
+            --config auto --error --sarif > semgrep-results.sarif || true
+
+      - name: Upload Semgrep SARIF to Security Tab
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: semgrep-results.sarif
+          category: semgrep-sast
+
+      - name: Upload JSON Results as Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: semgrep-results-json
+          path: semgrep-results.json
+
+---
+  snyk-sast:
+    name: Snyk (SAST)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create results directory
+        run: mkdir -p snyk-results
+
+      - name: Run Snyk SAST Scan
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: |
+          docker run --rm -v "$(pwd):/project" -e SNYK_TOKEN \
+            --entrypoint="" snyk/snyk:linux sh -c "
+              cd /project && \
+              snyk auth $SNYK_TOKEN && \
+              snyk code test --json-file-output=snyk-results/snyk-sast.json --sarif-file-output=snyk-results/snyk-sast.sarif || true
+            "
+      - name: Upload Snyk SAST SARIF to Security Tab
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: snyk-results/snyk-sast.sarif
+          category: snyk-sast
+
+      - name: Upload Snyk SAST JSON as Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: snyk-sast-results-json
+          path: snyk-results/snyk-sast.json
+
+---
+  snyk-sca:
+    name: Snyk (SCA)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create results directory
+        run: mkdir -p snyk-sca-results
+
+      - name: Run Snyk SCA Scan
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: |
+          docker run --rm -v "$(pwd):/project" -e SNYK_TOKEN \
+            --entrypoint="" snyk/snyk:linux sh -c "
+              cd /project && \
+              snyk auth $SNYK_TOKEN && \
+              snyk test --all-projects --json-file-output=snyk-sca-results/snyk-sca.json --sarif-file-output=snyk-sca-results/snyk-sca.sarif || true
+            "
+      - name: Upload Snyk SCA SARIF to Security Tab
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: snyk-sca-results/snyk-sca.sarif
+          category: snyk-sca
+
+      - name: Upload Snyk SCA JSON as Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: snyk-sca-results-json
+          path: snyk-sca-results/snyk-sca.json
+
+---
+  trivy-scans:
+    name: Trivy (SCA, Misconfig, Secret, SBOM)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create Trivy output directory
+        run: mkdir -p trivy-output
+
+      - name: Run Trivy Scans
+        run: |
+          # Vulnerability Scan
+          docker run --rm -v "$(pwd):/ws" aquasec/trivy:latest fs /ws --scanners vuln --format json --output /ws/trivy-output/vuln.json || true
+          docker run --rm -v "$(pwd):/ws" aquasec/trivy:latest fs /ws --scanners vuln --format sarif --output /ws/trivy-output/vuln.sarif || true
+          # Secret Scan
+          docker run --rm -v "$(pwd):/ws" aquasec/trivy:latest fs /ws --scanners secret --format json --output /ws/trivy-output/secrets.json || true
+          docker run --rm -v "$(pwd):/ws" aquasec/trivy:latest fs /ws --scanners secret --format sarif --output /ws/trivy-output/secrets.sarif || true
+          # Misconfiguration Scan
+          docker run --rm -v "$(pwd):/ws" aquasec/trivy:latest fs /ws --scanners misconfig --format json --output /ws/trivy-output/misconfig.json || true
+          docker run --rm -v "$(pwd):/ws" aquasec/trivy:latest fs /ws --scanners misconfig --format sarif --output /ws/trivy-output/misconfig.sarif || true
+
+      - name: Generate SBOM with Trivy
+        run: |
+          # Generate CycloneDX SBOM
+          docker run --rm -v "$(pwd):/ws" aquasec/trivy:latest fs /ws --format cyclonedx --output /ws/trivy-output/sbom.cyclonedx.json || true
+
+      - name: Upload Trivy SARIF reports to Security Tab
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-output/
+
+      - name: Upload All Trivy Results as Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-results
+          path: trivy-output/
+
+---
+  trufflehog-secrets:
+    name: TruffleHog (Secrets)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: Run TruffleHog Scan
+        run: |
+          mkdir -p trufflehog-output
+          # Run for JSON and SARIF output
+          docker run --rm -v "$(pwd):/pwd" trufflesecurity/trufflehog:latest filesystem --directory /pwd --json > trufflehog-output/results.json || true
+          docker run --rm -v "$(pwd):/pwd" trufflesecurity/trufflehog:latest filesystem --directory /pwd --sarif > trufflehog-output/results.sarif || true
+
+      - name: Upload TruffleHog SARIF to Security Tab
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trufflehog-output/results.sarif
+          category: trufflehog-secrets
+
+      - name: Upload TruffleHog JSON as Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: trufflehog-results-json
+          path: trufflehog-output/results.json
+
+---
+  owasp-zap-dast:
+    name: OWASP ZAP (DAST)
+    runs-on: ubuntu-latest
+    # This job requires the application to be running.
+    # The following steps assume a Python/Flask/Django app.
+    # You MUST adjust these steps to match your application's framework and startup command.
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          fi
+      
+      - name: Start the application in the background
+        # IMPORTANT: Replace this command with the one that starts your web application.
+        # Ensure it runs on localhost (127.0.0.1) and specify a port (e.g., 8080).
+        run: |
+          python your_app_startup_file.py &
+      
+      - name: Wait for application to be ready
+        run: |
+          echo "Waiting for application to start..."
+          sleep 30 # Adjust sleep time as needed
+
+      - name: Run ZAP Baseline Scan
+        uses: ZAP/zap-baseline-scan@v0.1.1
+        with:
+          # The target URL that ZAP should attack
+          target: 'http://127.0.0.1:8080'
+          # Generate both JSON and SARIF reports
+          cmd_options: '-J zap-results.json -S zap-results.sarif'
+          
+      - name: Upload ZAP SARIF to Security Tab
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: zap-results.sarif
+          category: owasp-zap-dast
+
+      - name: Upload ZAP JSON as Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: zap-results-json
+          path: zap-results.json
