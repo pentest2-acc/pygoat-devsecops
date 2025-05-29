@@ -20,6 +20,10 @@ jobs:
         run: |
           docker run --rm -v "$(pwd):/src" returntocorp/semgrep semgrep scan \
             --config auto \
+            --config="p/security-audit" \
+            --config="p/owasp-top-ten" \
+            --config "p/security-code-scan" \
+            --config "p/default"
             --error \
             --json > semgrep-results.json || true
 
@@ -30,55 +34,304 @@ jobs:
           path: semgrep-results.json
 
   snyk-scan:
-    name: Snyk Scan
+    name: Snyk SAST Scan
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Run Snyk Scan
-        run: |
-          docker run --rm -v "$(pwd):/project" -e SNYK_TOKEN=${{ secrets.SNYK_TOKEN }} \
-            snyk/snyk-cli:docker code test --all-projects --json-file-output=snyk-results.json || \
-          docker run --rm -v "$(pwd):/project" -e SNYK_TOKEN=${{ secrets.SNYK_TOKEN }} \
-            snyk/snyk-cli:docker code test --file=package.json --json-file-output=snyk-results.json || true
+      - name: Create results directory
+        run: mkdir -p snyk-results
 
-      - name: Upload Results
+      - name: Debug Repository Contents
+        run: |
+          echo "=== Repository Debug Information ==="
+          echo "Current directory: $(pwd)"
+          echo "Repository contents:"
+          find . -type f \( -name "*.js" -o -name "*.ts" -o -name "*.py" -o -name "*.java" -o -name "*.php" -o -name "*.rb" -o -name "*.go" -o -name "*.cs" -o -name "*.cpp" -o -name "*.c" \) | head -20
+          echo "Total supported files found:"
+          find . -type f \( -name "*.js" -o -name "*.ts" -o -name "*.py" -o -name "*.java" -o -name "*.php" -o -name "*.rb" -o -name "*.go" -o -name "*.cs" -o -name "*.cpp" -o -name "*.c" -o -name "*.jsx" -o -name "*.tsx" \) | wc -l
+          echo "Package files:"
+          find . -name "package.json" -o -name "requirements.txt" -o -name "pom.xml" -o -name "Gemfile" -o -name "go.mod"
+
+      - name: Run Snyk SAST Scan (Similar to Jenkins)
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: |
+          SUPPORTED_FILES=$(find . -type f \( -name "*.js" -o -name "*.ts" -o -name "*.py" -o -name "*.java" -o -name "*.php" -o -name "*.rb" -o -name "*.go" -o -name "*.cs" -o -name "*.cpp" -o -name "*.c" -o -name "*.jsx" -o -name "*.tsx" \) | wc -l)
+
+          if [ "$SUPPORTED_FILES" -eq 0 ]; then
+            echo "⚠️  No supported source code files found in repository"
+            echo '{"vulnerabilities":[],"summary":"No supported files found"}' > snyk-results/snyk-results.json
+          else
+            docker run --rm \
+              -v "$(pwd):/project" \
+              -e SNYK_TOKEN="${{ secrets.SNYK_TOKEN }}" \
+              --entrypoint="" \
+              snyk/snyk:linux \
+              sh -c "
+                cd /project && \
+                snyk auth $SNYK_TOKEN && \
+                snyk code test --json-file-output=snyk-results/snyk-results.json || true
+              "
+
+            if [ -f snyk-results/snyk-results.json ]; then
+              echo "✅ Snyk SAST scan completed successfully"
+              if grep -q '"error"' snyk-results/snyk-results.json; then
+                echo "❌ Scan completed with errors:"
+                cat snyk-results/snyk-results.json
+              else
+                VULN_COUNT=$(jq -r 'if .vulnerabilities then (.vulnerabilities | length) else 0 end' snyk-results/snyk-results.json || echo "0")
+                echo "Found $VULN_COUNT code vulnerabilities"
+              fi
+            else
+              echo '{"vulnerabilities":[],"summary":"Scan failed to generate results"}' > snyk-results/snyk-results.json
+            fi
+          fi
+
+      - name: Upload Snyk Results
         uses: actions/upload-artifact@v4
         with:
           name: snyk-results
-          path: snyk-results.json
+          path: snyk-results/
 
-  trivy-scan:
-    name: Trivy Scan
+  snyk-SCA-scan:
+    name: Snyk SCA Scan
     runs-on: ubuntu-latest
-    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
-      - name: Run Trivy Vulnerability FS Scan
+      - name: Create results directory
+        run: mkdir -p snyk-SCA-results
+
+      - name: Debug Repository Contents
+        run: |
+          echo "=== Repository Debug Information ==="
+          echo "Current directory: $(pwd)"
+          echo "Repository contents:"
+          find . -type f -name "*.js" -o -name "*.ts" -o -name "*.py" -o -name "*.java" -o -name "*.php" -o -name "*.rb" -o -name "*.go" -o -name "*.cs" -o -name "*.cpp" -o -name "*.c" | head -20
+          echo "Total supported files found:"
+          find . -type f \( -name "*.js" -o -name "*.ts" -o -name "*.py" -o -name "*.java" -o -name "*.php" -o -name "*.rb" -o -name "*.go" -o -name "*.cs" -o -name "*.cpp" -o -name "*.c" -o -name "*.jsx" -o -name "*.tsx" \) | wc -l
+          echo "Package files:"
+          find . -name "package.json" -o -name "requirements.txt" -o -name "pom.xml" -o -name "Gemfile" -o -name "go.mod"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install dependencies
+        run: |
+          if [ -f package.json ]; then
+            npm install
+          fi
+
+      - name: Run Snyk SCA Scan
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: |
+          SUPPORTED_FILES=$(find . -type f \( -name "*.js" -o -name "*.ts" -o -name "*.py" -o -name "*.java" -o -name "*.php" -o -name "*.rb" -o -name "*.go" -o -name "*.cs" -o -name "*.cpp" -o -name "*.c" -o -name "*.jsx" -o -name "*.tsx" \) | wc -l)
+
+          if [ "$SUPPORTED_FILES" -eq 0 ]; then
+            echo '{"vulnerabilities":[],"summary":"No supported files found"}' > snyk-SCA-results/snyk-SCA-results.json
+          else
+            docker run --rm \
+              -v "$(pwd):/project" \
+              -e SNYK_TOKEN="${{ secrets.SNYK_TOKEN }}" \
+              --entrypoint="" \
+              snyk/snyk:linux \
+              sh -c "
+                cd /project && \
+                snyk auth $SNYK_TOKEN && \
+                snyk test --json-file-output=snyk-SCA-results/snyk-SCA-results.json || true
+              "
+          fi
+
+      - name: Upload Snyk SCA Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: snyk-SCA-results
+          path: snyk-SCA-results/
+
+  trivy-scan:
+    name: Trivy Comprehensive Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js (for package.json processing)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install dependencies (for better SBOM generation)
+        run: |
+          if [ -f package.json ]; then
+            echo "Installing npm dependencies for better SBOM generation..."
+            npm install --package-lock-only || npm install || true
+          fi
+
+      - name: Debug Repository Structure
+        run: |
+          echo "=== Repository Structure Debug ==="
+          echo "Current directory: $(pwd)"
+          echo "All files (first 50):"
+          find . -type f | head -50
+          echo "Package manager files:"
+          find . -name "package.json" -o -name "package-lock.json" -o -name "yarn.lock" -o -name "requirements.txt" -o -name "Pipfile*" -o -name "pom.xml" -o -name "build.gradle*" -o -name "Gemfile*" -o -name "go.mod" -o -name "composer.json"
+          echo "Source code files:"
+          find . -type f \( -name "*.js" -o -name "*.ts" -o -name "*.jsx" -o -name "*.tsx" -o -name "*.py" -o -name "*.java" -o -name "*.php" -o -name "*.rb" -o -name "*.go" \) | wc -l
+
+      - name: Run Trivy Vulnerability Scan (Fixed)
         run: |
           mkdir -p trivy-output
-          docker run --rm -v "$(pwd):/src" \
+          
+          echo "=== Running Trivy Vulnerability Scan ==="
+          # Scan for vulnerabilities in dependencies
+          docker run --rm -v "$(pwd):/workspace" \
             -v /tmp/trivy-cache:/root/.cache \
-            aquasec/trivy:latest fs --scanners vuln /src \
-            --format json \
-            --output /src/trivy-output/trivy-vuln-results.json || true
+            aquasec/trivy:latest fs /workspace \
+            --scanners vuln \
+            --format table || true
 
-      - name: Run Trivy SCA Scan (Dependencies)
-        run: |
-          docker run --rm -v "$(pwd):/src" \
+          # Generate JSON output for vulnerabilities
+          docker run --rm -v "$(pwd):/workspace" \
             -v /tmp/trivy-cache:/root/.cache \
-            aquasec/trivy:latest fs --scanners license,secret,config /src \
+            aquasec/trivy:latest fs /workspace \
+            --scanners vuln \
             --format json \
-            --output /src/trivy-output/trivy-sca-results.json || true
+            --output /workspace/trivy-output/trivy-vuln-results.json || true
 
-      - name: Generate SBOM
+          # Check if vulnerabilities were found
+          if [ -f trivy-output/trivy-vuln-results.json ]; then
+            echo "Vulnerability scan results generated"
+            VULN_COUNT=$(jq -r '.Results[]?.Vulnerabilities // [] | length' trivy-output/trivy-vuln-results.json 2>/dev/null | awk '{sum+=$1} END {print sum+0}')
+            echo "Total vulnerabilities found: $VULN_COUNT"
+          fi
+
+      - name: Run Trivy Secret Scan (Enhanced)
         run: |
-          docker run --rm -v "$(pwd):/src" \
+          echo "=== Running Enhanced Secret Scan ==="
+          # Secret scan with table output
+          docker run --rm -v "$(pwd):/workspace" \
             -v /tmp/trivy-cache:/root/.cache \
-            aquasec/trivy:latest sbom /src \
+            aquasec/trivy:latest fs /workspace \
+            --scanners secret \
+            --format table || true
+
+          # Secret scan with JSON output
+          docker run --rm -v "$(pwd):/workspace" \
+            -v /tmp/trivy-cache:/root/.cache \
+            aquasec/trivy:latest fs /workspace \
+            --scanners secret \
+            --format json \
+            --output /workspace/trivy-output/trivy-secrets-results.json || true
+
+          if [ -f trivy-output/trivy-secrets-results.json ]; then
+            SECRET_COUNT=$(jq -r '.Results[]?.Secrets // [] | length' trivy-output/trivy-secrets-results.json 2>/dev/null | awk '{sum+=$1} END {print sum+0}')
+            echo "Total secrets found: $SECRET_COUNT"
+          fi
+
+      - name: Run Trivy Misconfiguration Scan
+        run: |
+          echo "=== Running Misconfiguration Scan ==="
+          # Misconfig scan with table output
+          docker run --rm -v "$(pwd):/workspace" \
+            -v /tmp/trivy-cache:/root/.cache \
+            aquasec/trivy:latest fs /workspace \
+            --scanners misconfig \
+            --format table || true
+
+          # Misconfig scan with JSON output
+          docker run --rm -v "$(pwd):/workspace" \
+            -v /tmp/trivy-cache:/root/.cache \
+            aquasec/trivy:latest fs /workspace \
+            --scanners misconfig \
+            --format json \
+            --output /workspace/trivy-output/trivy-misconfig-results.json || true
+
+      - name: Generate Enhanced SBOM
+        run: |
+          echo "=== Generating Software Bill of Materials (SBOM) ==="
+          
+          # Generate CycloneDX SBOM
+          docker run --rm -v "$(pwd):/workspace" \
+            -v /tmp/trivy-cache:/root/.cache \
+            aquasec/trivy:latest fs /workspace \
             --format cyclonedx \
-            --output /src/trivy-output/sbom.json || true
+            --output /workspace/trivy-output/sbom.cyclonedx.json || true
+
+          # Generate SPDX SBOM as alternative
+          docker run --rm -v "$(pwd):/workspace" \
+            -v /tmp/trivy-cache:/root/.cache \
+            aquasec/trivy:latest fs /workspace \
+            --format spdx-json \
+            --output /workspace/trivy-output/sbom.spdx.json || true
+
+          # Fallback: Generate npm-based SBOM if package.json exists and Trivy fails
+          if [ ! -s trivy-output/sbom.cyclonedx.json ] && [ ! -s trivy-output/sbom.spdx.json ]; then
+            echo "Trivy SBOM generation failed, trying alternative methods..."
+            if [ -f package.json ]; then
+              echo "Generating npm-based SBOM..."
+              npm list --json > trivy-output/npm-sbom.json 2>/dev/null || true
+              npm audit --json > trivy-output/npm-audit.json 2>/dev/null || true
+            fi
+            
+            # Create a simple manifest
+            echo '{"timestamp":"'$(date -u +"%Y-%m-%dT%H:%M:%SZ")'","scan_type":"filesystem","repository":"'$(pwd)'"}' > trivy-output/scan-manifest.json
+          fi
+
+          # Verify SBOM generation
+          echo "=== SBOM Generation Results ==="
+          ls -la trivy-output/ || true
+          if [ -s trivy-output/sbom.cyclonedx.json ]; then
+            echo "✅ CycloneDX SBOM generated successfully"
+            COMPONENTS=$(jq -r '.components | length' trivy-output/sbom.cyclonedx.json 2>/dev/null || echo "0")
+            echo "Components found: $COMPONENTS"
+          elif [ -s trivy-output/sbom.spdx.json ]; then
+            echo "✅ SPDX SBOM generated successfully"
+          elif [ -s trivy-output/npm-sbom.json ]; then
+            echo "✅ NPM-based SBOM generated as fallback"
+          else
+            echo "⚠️ No SBOM was generated successfully"
+          fi
+
+      - name: Create Comprehensive Security Summary
+        run: |
+          echo "=== Security Scan Summary ==="
+          
+          # Count findings from all scans
+          VULN_COUNT=0
+          SECRET_COUNT=0
+          MISCONFIG_COUNT=0
+          
+          if [ -f trivy-output/trivy-vuln-results.json ]; then
+            VULN_COUNT=$(jq -r '.Results[]?.Vulnerabilities // [] | length' trivy-output/trivy-vuln-results.json 2>/dev/null | awk '{sum+=$1} END {print sum+0}')
+          fi
+          
+          if [ -f trivy-output/trivy-secrets-results.json ]; then
+            SECRET_COUNT=$(jq -r '.Results[]?.Secrets // [] | length' trivy-output/trivy-secrets-results.json 2>/dev/null | awk '{sum+=$1} END {print sum+0}')
+          fi
+          
+          if [ -f trivy-output/trivy-misconfig-results.json ]; then
+            MISCONFIG_COUNT=$(jq -r '.Results[]?.Misconfigurations // [] | length' trivy-output/trivy-misconfig-results.json 2>/dev/null | awk '{sum+=$1} END {print sum+0}')
+          fi
+          
+          echo "📊 TRIVY SECURITY SCAN RESULTS:"
+          echo "   🔍 Vulnerabilities: $VULN_COUNT"
+          echo "   🔐 Secrets: $SECRET_COUNT"
+          echo "   ⚙️  Misconfigurations: $MISCONFIG_COUNT"
+          
+          # Create summary JSON
+          cat > trivy-output/security-summary.json << EOF
+          {
+            "timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+            "vulnerabilities": $VULN_COUNT,
+            "secrets": $SECRET_COUNT,
+            "misconfigurations": $MISCONFIG_COUNT,
+            "total_findings": $((VULN_COUNT + SECRET_COUNT + MISCONFIG_COUNT))
+          }
+          EOF
 
       - name: Upload Trivy Results
         uses: actions/upload-artifact@v4
@@ -91,12 +344,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Run TruffleHog
         run: |
           mkdir -p trufflehog-output
+
+          echo "=== Running TruffleHog Secret Scan ==="
+          docker run --rm -v "$(pwd):/pwd" trufflesecurity/trufflehog:latest \
+            filesystem --directory /pwd || true
+
           docker run --rm -v "$(pwd):/pwd" trufflesecurity/trufflehog:latest \
             filesystem --directory /pwd --json > trufflehog-output/trufflehog-results.json || true
+          
+          # Count secrets found
+          if [ -f trufflehog-output/trufflehog-results.json ]; then
+            SECRET_COUNT=$(grep -c '"Raw":' trufflehog-output/trufflehog-results.json 2>/dev/null || echo "0")
+            echo "TruffleHog found $SECRET_COUNT potential secrets"
+          fi
 
       - name: Upload TruffleHog Results
         uses: actions/upload-artifact@v4
